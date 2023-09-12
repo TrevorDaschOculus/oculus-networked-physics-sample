@@ -11,8 +11,9 @@ using System;
 using UnityEngine;
 using UnityEngine.Assertions;
 using System.Collections.Generic;
+using Oculus.Avatar2;
 
-public class Avatar: OvrAvatarLocalDriver
+public class Avatar : MonoBehaviour
 {
     const float LineWidth = 0.02f;
     const float RaycastDistance = 256.0f;
@@ -41,7 +42,8 @@ public class Avatar: OvrAvatarLocalDriver
 
     public GameObject linePrefab;
 
-    OvrAvatar oculusAvatar;
+    SampleAvatarEntity oculusAvatar;
+    private byte[] avatarReadBuffer = Array.Empty<byte>(); // default to empty
 
     Context context;
 
@@ -80,9 +82,7 @@ public class Avatar: OvrAvatarLocalDriver
         public HandInput input;
 
         public HandState state = HandState.Neutral;
-
-        public Animator animator;
-
+        
         public Transform transform;
 
         public bool touchingObject;
@@ -140,7 +140,7 @@ public class Avatar: OvrAvatarLocalDriver
     {
         Assert.IsNotNull( linePrefab );
 
-        oculusAvatar = (OvrAvatar) GetComponent( typeof( OvrAvatar ) );
+        oculusAvatar = (SampleAvatarEntity) GetComponent( typeof( SampleAvatarEntity ) );
 
         leftHand.id = LeftHand;
         rightHand.id = RightHand;
@@ -148,49 +148,35 @@ public class Avatar: OvrAvatarLocalDriver
         leftHand.name = "left hand";
         rightHand.name = "right hand";
 
-        leftHand.animator = oculusAvatar.HandLeft.animator;
-        rightHand.animator = oculusAvatar.HandRight.animator;
+        oculusAvatar.OnSkeletonLoadedEvent.AddListener(SkeletonLoadedEvent);
+    }
 
-        leftHand.transform = oculusAvatar.HandLeftRoot;
-        rightHand.transform = oculusAvatar.HandRightRoot;
-
-        Assert.IsNotNull( leftHand.transform );
-        Assert.IsNotNull( rightHand.transform );
+    private void SkeletonLoadedEvent(OvrAvatarEntity entity)
+    {
+        leftHand.transform = oculusAvatar.GetSkeletonTransform(CAPI.ovrAvatar2JointType.LeftHandIndexProximal);
+        rightHand.transform = oculusAvatar.GetSkeletonTransform(CAPI.ovrAvatar2JointType.RightHandIndexProximal);
     }
 
     void Update()
     {
         Assert.IsNotNull( context );
 
-        OvrAvatarDriver.PoseFrame frame;
-
-        if ( oculusAvatar.Driver.GetCurrentPose( out frame ) )
-        {
-            UpdateHand( ref leftHand, frame );
-            UpdateHand( ref rightHand, frame );
-        }
+        UpdateHand( OVRInput.Controller.LTouch, ref leftHand);
+        UpdateHand( OVRInput.Controller.RTouch, ref rightHand);
     }
 
     void FixedUpdate()
     {
         Assert.IsNotNull( context );
 
-        OvrAvatarDriver.PoseFrame frame;
 
-        if ( oculusAvatar.Driver.GetCurrentPose( out frame ) )
-        {
-            UpdateHandFixed( ref leftHand, frame );
-            UpdateHandFixed( ref rightHand, frame );
-        }
+        UpdateHandFixed( ref leftHand );
+        UpdateHandFixed( ref rightHand );
     }
 
-    void UpdateHand( ref HandData hand, OvrAvatarDriver.PoseFrame frame )
+    void UpdateHand( OVRInput.Controller controller, ref HandData hand )
     {
-        OvrAvatarDriver.HandPose handPose = ( hand.id == LeftHand ) ? frame.handLeftPose : frame.handRightPose;
-
-        OvrAvatarDriver.ControllerPose controllerPose = ( hand.id == LeftHand ) ? frame.controllerLeftPose : frame.controllerRightPose;
-
-        TranslateHandPoseToInput( ref handPose, ref controllerPose, ref hand.input );
+        GetControllerInput(controller, ref hand.input );
 
         UpdateRotate( ref hand );
 
@@ -205,7 +191,7 @@ public class Avatar: OvrAvatarLocalDriver
         UpdateHeldObject( ref hand );
     }
 
-    void UpdateHandFixed( ref HandData hand, OvrAvatarDriver.PoseFrame frame )
+    void UpdateHandFixed( ref HandData hand )
     {
         UpdateSnapToHand( ref hand );
     }
@@ -360,22 +346,22 @@ public class Avatar: OvrAvatarLocalDriver
         }
     }
 
-    void TranslateHandPoseToInput( ref OvrAvatarDriver.HandPose handPose, ref OvrAvatarDriver.ControllerPose controllerPose, ref HandInput input )
+    void GetControllerInput(OVRInput.Controller controller, ref HandInput input )
     {
-        input.handTrigger = handPose.gripFlex;
+        input.handTrigger = OVRInput.Get(OVRInput.Axis1D.PrimaryHandTrigger, controller);
 
         input.previousIndexTrigger = input.indexTrigger;
-        input.indexTrigger = handPose.indexFlex;
+        input.indexTrigger = OVRInput.Get(OVRInput.Axis1D.PrimaryIndexTrigger, controller);
 
         if ( input.indexTrigger >= IndexThreshold && input.previousIndexTrigger < IndexThreshold )
             input.indexPressFrame = context.GetRenderFrame();
 
         input.pointing = true;
 
-        input.x = controllerPose.button1IsDown;
-        input.y = controllerPose.button2IsDown;
+        input.x = OVRInput.Get(OVRInput.Button.One, controller);
+        input.y = OVRInput.Get(OVRInput.Button.Two, controller);
 
-        input.stick = controllerPose.joystickPosition;
+        input.stick = OVRInput.Get(OVRInput.Axis2D.PrimaryThumbstick, controller);
     }
 
     void DetectStateChanges( ref HandData hand )
@@ -629,20 +615,10 @@ public class Avatar: OvrAvatarLocalDriver
         switch ( hand.state )
         {
             case HandState.Pointing:
-                {
-                    UpdatePointingLine( ref hand );
-
-                    ForcePointAnimation( ref hand );
-                }
                 break;
 
             case HandState.Grip:
                 {
-                    if ( IsCloseGrip( ref hand ) )
-                        ForceGripAnimation( ref hand );
-                    else
-                        ForcePointAnimation( ref hand );
-
                     if ( hand.gripObject )
                     {
                         if ( hand.gripObject.transform.position.y < 0.0f )
@@ -777,22 +753,6 @@ public class Avatar: OvrAvatarLocalDriver
         hand.pointLine = null;
     }
 
-    void ForcePointAnimation( ref HandData hand )
-    {
-        if ( hand.touchingObject && hand.state == HandState.Pointing )
-            hand.animator.SetLayerWeight( hand.animator.GetLayerIndex( "Point Layer" ), 0.0f );         // indicates state of touching an object to player (for up-close grip)
-        else
-            hand.animator.SetLayerWeight( hand.animator.GetLayerIndex( "Point Layer" ), 1.0f );
-
-        hand.animator.SetLayerWeight( hand.animator.GetLayerIndex( "Thumb Layer" ), 0.0f );
-    }
-
-    void ForceGripAnimation( ref HandData hand )
-    {
-        hand.animator.SetLayerWeight( hand.animator.GetLayerIndex( "Point Layer" ), 0.0f );
-        hand.animator.SetLayerWeight( hand.animator.GetLayerIndex( "Thumb Layer" ), 0.0f );
-    }
-
     Vector3 CalculateAngularVelocity( Quaternion previous, Quaternion current, float dt, float minimumAngle )
     {
         Assert.IsTrue( dt > 0.0f );
@@ -821,18 +781,11 @@ public class Avatar: OvrAvatarLocalDriver
         return angularVelocity;
     }
 
-    public bool GetAvatarState( out AvatarState state )
+    public bool GetAvatarState( out AvatarState avatarState )
     {
-        OvrAvatarDriver.PoseFrame frame;
-
-        if ( !oculusAvatar.Driver.GetCurrentPose( out frame ) )
-        {
-            state = AvatarState.defaults;
-            return false;
-        }
-
-        AvatarState.Initialize( out state, context.GetClientIndex(), frame, leftHand.gripObject, rightHand.gripObject );
-
+        uint length = oculusAvatar.SkeletonJointCount > 0 ?
+            oculusAvatar.RecordStreamData_AutoBuffer(OvrAvatarEntity.StreamLOD.High, ref avatarReadBuffer) : 0;
+        AvatarState.Initialize( out avatarState, context.GetClientIndex(), avatarReadBuffer, length, leftHand.gripObject, rightHand.gripObject );
         return true;
     }
 
@@ -922,8 +875,18 @@ public class Avatar: OvrAvatarLocalDriver
         return leftHand.input.y || rightHand.input.y;
     }
 
-    public override bool GetCurrentPose( out PoseFrame pose )
+    public void LoadAvatar( ulong userId, int anonymousId )
     {
-        return base.GetCurrentPose( out pose );
+        if (oculusAvatar == null)
+            oculusAvatar = GetComponent<SampleAvatarEntity>();
+        
+        if (userId == 0)
+        {
+            oculusAvatar.LoadPreset( anonymousId % 32 );
+        }
+        else
+        {
+            oculusAvatar.LoadRemoteUserCdnAvatar( userId );
+        }
     }
 }

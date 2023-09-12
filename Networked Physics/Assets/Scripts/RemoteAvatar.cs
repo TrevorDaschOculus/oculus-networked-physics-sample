@@ -11,8 +11,10 @@ using System;
 using UnityEngine;
 using UnityEngine.Assertions;
 using System.Collections.Generic;
+using Oculus.Avatar2;
+using UnityEngine.Events;
 
-public class RemoteAvatar : OvrAvatarDriver
+public class RemoteAvatar : MonoBehaviour
 {
     const float LineWidth = 0.25f;
 
@@ -25,7 +27,6 @@ public class RemoteAvatar : OvrAvatarDriver
 
     public class HandData
     {
-        public Animator animator;
         public Transform transform;
         public GameObject pointLine;
         public GameObject gripObject;
@@ -33,8 +34,10 @@ public class RemoteAvatar : OvrAvatarDriver
 
     HandData leftHand = new HandData();
     HandData rightHand = new HandData();
-    PoseFrame remotePose = new PoseFrame();
+    SampleAvatarEntity oculusAvatar;
     Context context;
+    private uint avatarReadLength = 0;
+    private byte[] avatarReadBuffer = Array.Empty<byte>(); // default to empty
 
     public HandData GetLeftHand() { return leftHand; }
     public HandData GetRightHand() { return rightHand; }
@@ -46,17 +49,16 @@ public class RemoteAvatar : OvrAvatarDriver
 
 	void Start()
     {
-        var oculusAvatar = (OvrAvatar) GetComponent( typeof( OvrAvatar ) );
+        oculusAvatar = (SampleAvatarEntity) GetComponent( typeof( SampleAvatarEntity ) );
 
-        leftHand.animator = oculusAvatar.HandLeft.animator;
-        rightHand.animator = oculusAvatar.HandRight.animator;
-
-        leftHand.transform = oculusAvatar.HandLeftRoot;
-        rightHand.transform = oculusAvatar.HandRightRoot;
-
-        Assert.IsNotNull( leftHand.transform );
-        Assert.IsNotNull( rightHand.transform );
+        oculusAvatar.OnSkeletonLoadedEvent.AddListener(SkeletonLoadedEvent);
 	}
+    
+    private void SkeletonLoadedEvent(OvrAvatarEntity entity)
+    {
+        leftHand.transform = oculusAvatar.GetSkeletonTransform(CAPI.ovrAvatar2JointType.LeftHandIndexProximal);
+        rightHand.transform = oculusAvatar.GetSkeletonTransform(CAPI.ovrAvatar2JointType.RightHandIndexProximal);
+    }
 
     void CreatePointingLine( ref HandData hand )
     {
@@ -148,37 +150,65 @@ public class RemoteAvatar : OvrAvatarDriver
         }
     }
 
-    public bool GetAvatarState( out AvatarState state )
+    public bool GetAvatarState( out AvatarState avatarState )
     {
-        AvatarState.Initialize( out state, clientIndex, remotePose, leftHand.gripObject, rightHand.gripObject );
+        AvatarState.Initialize( out avatarState, clientIndex, avatarReadBuffer, avatarReadLength, leftHand.gripObject, rightHand.gripObject );
         return true;
     }
 
-    public void ApplyAvatarPose( ref AvatarState state )
+    public void ApplyLeftHandUpdate( ref AvatarState avatarState )
     {
-        AvatarState.ApplyPose( ref state, clientIndex, remotePose, context );
+        AvatarState.ApplyLeftHandUpdate( ref avatarState, clientIndex, context, this );
     }
 
-    public void ApplyLeftHandUpdate( ref AvatarState state )
+    public void ApplyRightHandUpdate( ref AvatarState avatarState )
     {
-        AvatarState.ApplyLeftHandUpdate( ref state, clientIndex, context, this );
-    }
-
-    public void ApplyRightHandUpdate( ref AvatarState state )
-    {
-        AvatarState.ApplyRightHandUpdate( ref state, clientIndex, context, this );
-    }
-
-    public override bool GetCurrentPose( out PoseFrame pose )
-    {
-        pose = remotePose;
-        return true;
+        AvatarState.ApplyRightHandUpdate( ref avatarState, clientIndex, context, this );
     }
 
     public GameObject GetHead()
     {
-        var oculusAvatar = (OvrAvatar) GetComponent( typeof( OvrAvatar ) );
-        return oculusAvatar.Head.gameObject;
+        return oculusAvatar.GetSkeletonTransform(CAPI.ovrAvatar2JointType.Head).gameObject;
+    }
+
+    public void ApplyAvatarPose(ref AvatarState avatarStreamState)
+    {
+        if (avatarStreamState.stream_length == 0)
+            return;
+        
+        // copy to our read buffer to echo back if requested
+        if (avatarStreamState.stream_length > avatarReadBuffer.Length)
+            Array.Resize(ref avatarReadBuffer, (int)(avatarStreamState.stream_length * 2));
+
+        Buffer.BlockCopy(avatarStreamState.stream_data, 0, avatarReadBuffer, 0, (int)avatarStreamState.stream_length);
+        avatarReadLength = avatarStreamState.stream_length;
+        
+        oculusAvatar.ApplyStreamData(avatarStreamState.stream_data, avatarStreamState.stream_length);
+    }
+
+    public void LoadAvatar( ulong userId, int anonymousId )
+    {
+        if (oculusAvatar == null)
+            oculusAvatar = GetComponent<SampleAvatarEntity>();
+        
+        if (!oculusAvatar.IsCreated)
+        {
+            oculusAvatar.CreateEntity();
+        }
+        if (userId == 0)
+        {
+            oculusAvatar.LoadPreset( anonymousId % 32 );
+        }
+        else
+        {
+            oculusAvatar.LoadRemoteUserCdnAvatar( userId );
+        }
+    }
+
+    public void UnloadAvatar()
+    {
+        if (oculusAvatar != null)
+            oculusAvatar.Teardown();
     }
 }
 

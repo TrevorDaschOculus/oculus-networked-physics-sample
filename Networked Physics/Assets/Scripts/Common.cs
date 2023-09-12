@@ -8,6 +8,7 @@
  */
 
 using System;
+using LiteNetLib;
 using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Assertions;
@@ -20,6 +21,11 @@ public class Common: MonoBehaviour
 
     public const int ConnectionTimeout = 5;
 
+    protected const int Port = 9234;
+
+    protected static byte[] MagicHostBytes = Guid.Parse("D6F43B3F-F150-EE11-AA20-2BDE4B014ABB").ToByteArray();
+    protected static byte[] MagicClientBytes = Guid.Parse("4CD0E322-F150-EE11-92D2-28DE4B014ABB").ToByteArray();
+
     public GameObject localAvatar;
 
     protected AvatarState[] interpolatedAvatarState = new AvatarState[Constants.MaxClients];
@@ -30,7 +36,7 @@ public class Common: MonoBehaviour
 
     protected double renderTime = 0.0;
     protected double physicsTime = 0.0;
-
+    
     protected int[] cubeIds = new int[Constants.NumCubes];
     protected bool[] notChanged = new bool[Constants.NumCubes];
     protected bool[] hasDelta = new bool[Constants.NumCubes];
@@ -55,7 +61,7 @@ public class Common: MonoBehaviour
     protected AvatarState[] readAvatarState = new AvatarState[Constants.MaxClients];
     protected AvatarStateQuantized[] readAvatarStateQuantized = new AvatarStateQuantized[Constants.MaxClients];
 
-    protected uint[] packetBuffer = new uint[Constants.MaxPacketSize / 4];
+    protected uint[] packetBuffer = new uint[Constants.MaxPacketSize / 2];
 
     protected Network.ReadStream readStream = new Network.ReadStream();
     protected Network.WriteStream writeStream = new Network.WriteStream();
@@ -71,6 +77,7 @@ public class Common: MonoBehaviour
         public bool[] clientConnected = new bool[Constants.MaxClients];
         public ulong[] clientUserId = new ulong[Constants.MaxClients];
         public string[] clientUserName = new string[Constants.MaxClients];
+        public int[] clientAnonymousId = new int[Constants.MaxClients];
 
         public void Clear()
         {
@@ -79,6 +86,7 @@ public class Common: MonoBehaviour
                 clientConnected[i] = false;
                 clientUserId[i] = 0;
                 clientUserName[i] = "";
+                clientAnonymousId[i] = 0;
             }
         }
 
@@ -89,14 +97,15 @@ public class Common: MonoBehaviour
                 clientConnected[i] = other.clientConnected[i];
                 clientUserId[i] = other.clientUserId[i];
                 clientUserName[i] = other.clientUserName[i];
+                clientAnonymousId[i] = other.clientAnonymousId[i];
             }
         }
 
-        public int FindClientByUserId( ulong userId )
+        public int FindClientByUserIdAndAnonymousId( ulong userId, int anonymousId )
         {
             for ( int i = 0; i < Constants.MaxClients; ++i )
             {
-                if ( clientConnected[i] && clientUserId[i] == userId )
+                if ( clientConnected[i] && clientUserId[i] == userId && clientAnonymousId[i] == anonymousId)
                     return i;
             }
 
@@ -121,7 +130,7 @@ public class Common: MonoBehaviour
 
     protected ServerInfo serverInfo = new ServerInfo();
 
-    protected void Start()
+    protected virtual void Start()
     {
         Debug.Log( "Running Tests" );
 
@@ -190,11 +199,11 @@ public class Common: MonoBehaviour
             connectionData.remoteFrameNumber++;
     }
 
-    protected void AddStateUpdatePacketToJitterBuffer( Context context, Context.ConnectionData connectionData, byte[] packetData )
+    protected void AddStateUpdatePacketToJitterBuffer( Context context, Context.ConnectionData connectionData, byte[] packetData, int offset)
     {
         long packetFrameNumber;
 
-        if ( connectionData.jitterBuffer.AddStateUpdatePacket( packetData, connectionData.receiveDeltaBuffer, context.GetResetSequence(), out packetFrameNumber ) )
+        if ( connectionData.jitterBuffer.AddStateUpdatePacket( packetData, offset, connectionData.receiveDeltaBuffer, context.GetResetSequence(), out packetFrameNumber ) )
         {
             if ( connectionData.firstRemotePacket )
             {
@@ -251,7 +260,7 @@ public class Common: MonoBehaviour
         connectionData.connection.ProcessPacketHeader( ref entry.packetHeader );
     }
 
-    protected bool WriteServerInfoPacket( bool[] clientConnected, ulong[] clientUserId, string[] clientUserName )
+    protected bool WriteServerInfoPacket( bool[] clientConnected, ulong[] clientUserId, string[] clientUserName, int[] clientAnonymousId )
     {
         Profiler.BeginSample( "WriteServerInfoPacket" );
 
@@ -261,7 +270,7 @@ public class Common: MonoBehaviour
 
         try
         {
-            packetSerializer.WriteServerInfoPacket( writeStream, clientConnected, clientUserId, clientUserName );
+            packetSerializer.WriteServerInfoPacket( writeStream, clientConnected, clientUserId, clientUserName, clientAnonymousId );
 
             writeStream.Finish();
         }
@@ -276,17 +285,17 @@ public class Common: MonoBehaviour
         return result;
     }
 
-    protected bool ReadServerInfoPacket( byte[] packetData, bool[] clientConnected, ulong[] clientUserId, string[] clientUserName )
+    protected bool ReadServerInfoPacket( byte[] packetData, int offset, bool[] clientConnected, ulong[] clientUserId, string[] clientUserName, int[] clientAnonymousId )
     {
         Profiler.BeginSample( "ReadServerInfoPacket" );
 
-        readStream.Start( packetData );
+        readStream.Start( packetData, offset );
 
         bool result = true;
 
         try
         {
-            packetSerializer.ReadServerInfoPacket( readStream, clientConnected, clientUserId, clientUserName );
+            packetSerializer.ReadServerInfoPacket( readStream, clientConnected, clientUserId, clientUserName, clientAnonymousId );
         }
         catch ( Network.SerializeException )
         {
@@ -326,11 +335,11 @@ public class Common: MonoBehaviour
         return result;
     }
 
-    protected bool ReadStateUpdatePacket( byte[] packetData, out Network.PacketHeader packetHeader, out int numAvatarStates, ref AvatarStateQuantized[] avatarState, out int numStateUpdates, ref int[] cubeIds, ref bool[] notChanged, ref bool[] hasDelta, ref bool[] perfectPrediction, ref bool[] hasPredictionDelta, ref ushort[] baselineSequence, ref CubeState[] cubeState, ref CubeDelta[] cubeDelta, ref CubeDelta[] predictionDelta )
+    protected bool ReadStateUpdatePacket( byte[] packetData, int offset, out Network.PacketHeader packetHeader, out int numAvatarStates, ref AvatarStateQuantized[] avatarState, out int numStateUpdates, ref int[] cubeIds, ref bool[] notChanged, ref bool[] hasDelta, ref bool[] perfectPrediction, ref bool[] hasPredictionDelta, ref ushort[] baselineSequence, ref CubeState[] cubeState, ref CubeDelta[] cubeDelta, ref CubeDelta[] predictionDelta )
     {
         Profiler.BeginSample( "ReadStateUpdatePacket" );
 
-        readStream.Start( packetData );
+        readStream.Start( packetData, offset );
 
         bool result = true;
 
@@ -922,41 +931,20 @@ public class Common: MonoBehaviour
         file.Flush();
     }
 
-    protected void InitializePlatformSDK( Oculus.Platform.Message.Callback callback )
+    protected bool InitializePlatformSDK( Oculus.Platform.Message.Callback callback )
     {
-        Core.Initialize();
-
-        Entitlements.IsUserEntitledToApplication().OnComplete( callback );
-    }
-
-    protected void JoinRoom( ulong roomId, Message<Room>.Callback callback )
-    {
-        Debug.Log( "Joining room " + roomId );
-
-        Rooms.Join( roomId, true ).OnComplete( callback );
-    }
-
-    protected void LeaveRoom( ulong roomId, Message<Room>.Callback callback )
-    {
-        if ( roomId == 0 )
-            return;
-
-        Debug.Log( "Leaving room " + roomId );
-
-        Rooms.Leave( roomId ).OnComplete( callback );
-    }
-
-    protected void PrintRoomDetails( Room room )
-    {
-        Debug.Log( "AppID: " + room.ApplicationID );
-        Debug.Log( "Room ID: " + room.ID );
-        Debug.Log( "Users in room: " + room.Users.Count + " / " + room.MaxUsers );
-        if ( room.Owner != null )
+        try
         {
-            Debug.Log( "Room owner: " + room.Owner.OculusID + " [" + room.Owner.ID + "]" );
+            Core.Initialize();
+
+            Entitlements.IsUserEntitledToApplication().OnComplete(callback);
+            return true;
         }
-        Debug.Log( "Join Policy: " + room.JoinPolicy.ToString() );
-        Debug.Log( "Room Type: " + room.Type.ToString() );
+        catch (Exception ex)
+        {
+            Debug.LogException(ex);
+            return false;
+        }
     }
 
     protected bool FindUserById( UserList users, ulong userId )

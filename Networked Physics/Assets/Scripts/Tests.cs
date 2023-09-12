@@ -60,7 +60,7 @@ public static class Tests
 
         var reader = new Network.BitReader();
 
-        reader.Start( readBuffer );
+        reader.Start( readBuffer, 0 );
 
         Assert.IsTrue( reader.GetBitsRead() == 0 );
         Assert.IsTrue( reader.GetBitsRemaining() == bytesWritten * 8 );
@@ -142,7 +142,7 @@ public static class Tests
 
         var readStream = new Network.ReadStream();
 
-        readStream.Start( packet );
+        readStream.Start( packet, 0 );
 
         TestStruct output;
         serializer.ReadTestStruct( readStream, out output );

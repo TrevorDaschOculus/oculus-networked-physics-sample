@@ -247,9 +247,9 @@ namespace Network
         int m_scratchBits;
         int m_wordIndex;
 
-        public void Start( byte[] data )
+        public void Start( byte[] data, int offset )
         {
-            int bytes = data.Length;
+            int bytes = data.Length - offset;
             m_numWords = ( bytes + 3 ) / 4;
             m_numBits = bytes * 8;
             m_bitsRead = 0;
@@ -257,7 +257,7 @@ namespace Network
             m_scratchBits = 0;
             m_wordIndex = 0;
             m_data = new uint[m_numWords];
-            Buffer.BlockCopy( data, 0, m_data, 0, bytes );
+            Buffer.BlockCopy( data, offset, m_data, 0, bytes );
         }
 
         public bool WouldOverflow( int bits )
@@ -489,9 +489,9 @@ namespace Network
         int m_error = Constants.STREAM_ERROR_NONE;
         byte[] m_floatBytes = new byte[4];
 
-        public void Start( byte[] data )
+        public void Start( byte[] data, int offset )
         {
-            m_reader.Start( data );
+            m_reader.Start( data, offset );
         }
 
         public bool SerializeSignedInteger( out int value, int min, int max )
@@ -753,6 +753,11 @@ namespace Network
         {
             stream.SerializeBits( value, bits );
         }
+        
+        public void write_bytes( WriteStream stream, byte[] data, int length )
+        {
+            stream.SerializeBytes( data, length );
+        }
 
         public void write_string( WriteStream stream, string value )
         {
@@ -807,6 +812,12 @@ namespace Network
         public void read_bits( ReadStream stream, out ulong value, int bits )
         {
             if ( !stream.SerializeBits( out value, bits ) )
+                throw new SerializeException();
+        }
+
+        public void read_bytes(ReadStream stream, byte[] data, int length)
+        {
+            if ( !stream.SerializeBytes( data, length ) )
                 throw new SerializeException();
         }
 

@@ -20,7 +20,7 @@ public class PacketSerializer: Network.Serializer
         StateUpdate = 0,                    // most recent state of the world, delta encoded relative to most recent state per-object acked by the client. sent 90 times per-second.
     };
 
-    public void WriteServerInfoPacket( Network.WriteStream stream, bool[] clientConnected, ulong[] clientUserId, string[] clientUserName )
+    public void WriteServerInfoPacket( Network.WriteStream stream, bool[] clientConnected, ulong[] clientUserId, string[] clientUserName, int[] clientAnonymousId )
     {
         byte packetType = (byte) PacketType.ServerInfo;
 
@@ -36,10 +36,12 @@ public class PacketSerializer: Network.Serializer
             write_bits( stream, clientUserId[i], 64 );
 
             write_string( stream, clientUserName[i] );
+            
+            write_int( stream, clientAnonymousId[i], 0, int.MaxValue );
         }
     }
 
-    public void ReadServerInfoPacket( Network.ReadStream stream, bool[] clientConnected, ulong[] clientUserId, string[] clientUserName )
+    public void ReadServerInfoPacket( Network.ReadStream stream, bool[] clientConnected, ulong[] clientUserId, string[] clientUserName, int[] clientAnonymousId )
     {
         byte packetType = 0;
 
@@ -57,6 +59,8 @@ public class PacketSerializer: Network.Serializer
             read_bits( stream, out clientUserId[i], 64 );
 
             read_string( stream, out clientUserName[i] );
+            
+            read_int( stream, out clientAnonymousId[i], 0, int.MaxValue );
         }
     }
 
@@ -220,7 +224,7 @@ public class PacketSerializer: Network.Serializer
         read_int( stream, out numAvatarStates, 0, Constants.MaxClients );
         for ( int i = 0; i < numAvatarStates; ++i )
         {
-            read_avatar_state( stream, out avatarState[i] );
+            read_avatar_state( stream, ref avatarState[i] );
         }
 
         read_int( stream, out numStateUpdates, 0, Constants.MaxStateUpdates );
@@ -983,29 +987,6 @@ public class PacketSerializer: Network.Serializer
     {
         write_int( stream, avatarState.client_index, 0, Constants.MaxClients - 1 );
 
-        write_int( stream, avatarState.head_position_x, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-        write_int( stream, avatarState.head_position_y, Constants.PositionMinimumY, Constants.PositionMaximumY );
-        write_int( stream, avatarState.head_position_z, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-
-        write_bits( stream, avatarState.head_rotation_largest, 2 );
-        write_bits( stream, avatarState.head_rotation_a, Constants.RotationBits );
-        write_bits( stream, avatarState.head_rotation_b, Constants.RotationBits );
-        write_bits( stream, avatarState.head_rotation_c, Constants.RotationBits );
-
-        write_int( stream, avatarState.left_hand_position_x, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-        write_int( stream, avatarState.left_hand_position_y, Constants.PositionMinimumY, Constants.PositionMaximumY );
-        write_int( stream, avatarState.left_hand_position_z, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-
-        write_bits( stream, avatarState.left_hand_rotation_largest, 2 );
-        write_bits( stream, avatarState.left_hand_rotation_a, Constants.RotationBits );
-        write_bits( stream, avatarState.left_hand_rotation_b, Constants.RotationBits );
-        write_bits( stream, avatarState.left_hand_rotation_c, Constants.RotationBits );
-
-        write_int( stream, avatarState.left_hand_grip_trigger, Constants.TriggerMinimum, Constants.TriggerMaximum );
-        write_int( stream, avatarState.left_hand_index_trigger, Constants.TriggerMinimum, Constants.TriggerMaximum );
-        write_bool( stream, avatarState.left_hand_pointing );
-        write_bool( stream, avatarState.left_hand_thumbs_up );
-
         write_bool( stream, avatarState.left_hand_holding_cube );
 
         if ( avatarState.left_hand_holding_cube )
@@ -1024,20 +1005,6 @@ public class PacketSerializer: Network.Serializer
             write_bits( stream, avatarState.left_hand_cube_local_rotation_c, Constants.RotationBits );
         }
 
-        write_int( stream, avatarState.right_hand_position_x, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-        write_int( stream, avatarState.right_hand_position_y, Constants.PositionMinimumY, Constants.PositionMaximumY );
-        write_int( stream, avatarState.right_hand_position_z, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-
-        write_bits( stream, avatarState.right_hand_rotation_largest, 2 );
-        write_bits( stream, avatarState.right_hand_rotation_a, Constants.RotationBits );
-        write_bits( stream, avatarState.right_hand_rotation_b, Constants.RotationBits );
-        write_bits( stream, avatarState.right_hand_rotation_c, Constants.RotationBits );
-
-        write_int( stream, avatarState.right_hand_grip_trigger, Constants.TriggerMinimum, Constants.TriggerMaximum );
-        write_int( stream, avatarState.right_hand_index_trigger, Constants.TriggerMinimum, Constants.TriggerMaximum );
-        write_bool( stream, avatarState.right_hand_pointing );
-        write_bool( stream, avatarState.right_hand_thumbs_up );
-
         write_bool( stream, avatarState.right_hand_holding_cube );
 
         if ( avatarState.right_hand_holding_cube )
@@ -1055,36 +1022,14 @@ public class PacketSerializer: Network.Serializer
             write_bits( stream, avatarState.right_hand_cube_local_rotation_b, Constants.RotationBits );
             write_bits( stream, avatarState.right_hand_cube_local_rotation_c, Constants.RotationBits );
         }
-
-        write_int( stream, avatarState.voice_amplitude, Constants.VoiceMinimum, Constants.VoiceMaximum );
+        
+        write_uint(stream, avatarState.stream_length, 0, ushort.MaxValue);
+        write_bytes(stream, avatarState.stream_data, (int)avatarState.stream_length);
     }
 
-    void read_avatar_state( Network.ReadStream stream, out AvatarStateQuantized avatarState )
+    void read_avatar_state( Network.ReadStream stream, ref AvatarStateQuantized avatarState )
     {
         read_int( stream, out avatarState.client_index, 0, Constants.MaxClients - 1 );
-
-        read_int( stream, out avatarState.head_position_x, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-        read_int( stream, out avatarState.head_position_y, Constants.PositionMinimumY, Constants.PositionMaximumY );
-        read_int( stream, out avatarState.head_position_z, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-
-        read_bits( stream, out avatarState.head_rotation_largest, 2 );
-        read_bits( stream, out avatarState.head_rotation_a, Constants.RotationBits );
-        read_bits( stream, out avatarState.head_rotation_b, Constants.RotationBits );
-        read_bits( stream, out avatarState.head_rotation_c, Constants.RotationBits );
-
-        read_int( stream, out avatarState.left_hand_position_x, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-        read_int( stream, out avatarState.left_hand_position_y, Constants.PositionMinimumY, Constants.PositionMaximumY );
-        read_int( stream, out avatarState.left_hand_position_z, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-
-        read_bits( stream, out avatarState.left_hand_rotation_largest, 2 );
-        read_bits( stream, out avatarState.left_hand_rotation_a, Constants.RotationBits );
-        read_bits( stream, out avatarState.left_hand_rotation_b, Constants.RotationBits );
-        read_bits( stream, out avatarState.left_hand_rotation_c, Constants.RotationBits );
-
-        read_int( stream, out avatarState.left_hand_grip_trigger, Constants.TriggerMinimum, Constants.TriggerMaximum );
-        read_int( stream, out avatarState.left_hand_index_trigger, Constants.TriggerMinimum, Constants.TriggerMaximum );
-        read_bool( stream, out avatarState.left_hand_pointing );
-        read_bool( stream, out avatarState.left_hand_thumbs_up );
 
         read_bool( stream, out avatarState.left_hand_holding_cube );
 
@@ -1117,20 +1062,6 @@ public class PacketSerializer: Network.Serializer
             avatarState.left_hand_cube_local_rotation_c = 0;
         }
 
-        read_int( stream, out avatarState.right_hand_position_x, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-        read_int( stream, out avatarState.right_hand_position_y, Constants.PositionMinimumY, Constants.PositionMaximumY );
-        read_int( stream, out avatarState.right_hand_position_z, Constants.PositionMinimumXZ, Constants.PositionMaximumXZ );
-
-        read_bits( stream, out avatarState.right_hand_rotation_largest, 2 );
-        read_bits( stream, out avatarState.right_hand_rotation_a, Constants.RotationBits );
-        read_bits( stream, out avatarState.right_hand_rotation_b, Constants.RotationBits );
-        read_bits( stream, out avatarState.right_hand_rotation_c, Constants.RotationBits );
-
-        read_int( stream, out avatarState.right_hand_grip_trigger, Constants.TriggerMinimum, Constants.TriggerMaximum );
-        read_int( stream, out avatarState.right_hand_index_trigger, Constants.TriggerMinimum, Constants.TriggerMaximum );
-        read_bool( stream, out avatarState.right_hand_pointing );
-        read_bool( stream, out avatarState.right_hand_thumbs_up );
-
         read_bool( stream, out avatarState.right_hand_holding_cube );
 
         if ( avatarState.right_hand_holding_cube )
@@ -1161,7 +1092,10 @@ public class PacketSerializer: Network.Serializer
             avatarState.right_hand_cube_local_rotation_b = 0;
             avatarState.right_hand_cube_local_rotation_c = 0;
         }
-
-        read_int( stream, out avatarState.voice_amplitude, Constants.VoiceMinimum, Constants.VoiceMaximum );
+        
+        read_uint(stream, out avatarState.stream_length, 0, ushort.MaxValue);
+        if (avatarState.stream_data == null || avatarState.stream_data.Length < avatarState.stream_length)
+            Array.Resize(ref avatarState.stream_data, (int)avatarState.stream_length);
+        read_bytes(stream, avatarState.stream_data, (int)avatarState.stream_length);
     }
 }

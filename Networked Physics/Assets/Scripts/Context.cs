@@ -12,6 +12,7 @@ using UnityEngine;
 using UnityEngine.Profiling;
 using UnityEngine.Assertions;
 using System.Collections.Generic;
+using Oculus.Avatar2;
 
 public class Context: MonoBehaviour
 {
@@ -211,6 +212,7 @@ public class Context: MonoBehaviour
         return authorityIndex;
     }
 
+
     public RemoteAvatar GetRemoteAvatar( int clientIndex )
     {
         Assert.IsTrue( clientIndex >= 0 );
@@ -224,21 +226,21 @@ public class Context: MonoBehaviour
 
     void ShowHideObject( GameObject gameObject, bool show )
     {
-        Renderer[] renderers = gameObject.GetComponentsInChildren<Renderer>();
-        foreach ( Renderer renderer in renderers )
-        {
-            renderer.enabled = show;
-        }
+        gameObject.SetActive(show);
     }
 
-    public void ShowRemoteAvatar( int clientIndex )
+    public void ShowRemoteAvatar( int clientIndex, ulong userId, int avatarId )
     {
-        ShowHideObject( GetRemoteAvatar( clientIndex ).gameObject, true );
+        var avatar = GetRemoteAvatar( clientIndex );
+        ShowHideObject( avatar.gameObject, true );
+        avatar.LoadAvatar( userId, avatarId );
     }
 
     public void HideRemoteAvatar( int clientIndex )
     {
-        ShowHideObject( GetRemoteAvatar( clientIndex ).gameObject, false );
+        var avatar = GetRemoteAvatar( clientIndex );
+        avatar.UnloadAvatar();
+        ShowHideObject( avatar.gameObject, false );
     }
 
     public void ResetAuthorityForClientCubes( int clientIndex )
@@ -1055,6 +1057,7 @@ public class Context: MonoBehaviour
 
     void InitializeAvatars()
     {
+        OvrAvatarManager.EnsureInstantiated();
         for ( int i = 0; i < Constants.MaxClients; ++i )
         {
             RemoteAvatar remoteAvatar = GetRemoteAvatar( i );

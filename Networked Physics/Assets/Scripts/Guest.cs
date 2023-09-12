@@ -14,10 +14,15 @@ using UnityEngine.Assertions;
 using Oculus.Platform;
 using Oculus.Platform.Models;
 using System.Collections.Generic;
+using System.Net;
+using System.Net.Sockets;
+using LiteNetLib;
+using LiteNetLib.Utils;
+using Random = UnityEngine.Random;
 
-public class Guest: Common
+public class Guest: Common, INetEventListener
 {
-    const double RetryTime = 0.0;//5.0;                                   // time between retry attempts.
+    const double RetryTime = 5.0;                                   // time between retry attempts.
 
     public Context context;
 
@@ -37,6 +42,8 @@ public class Guest: Common
 
     string oculusId;                                                // this is our user name.
 
+    int anonymousId;                                                   // this is the id of the avatar preset to use if the oculus user isn't loaded
+    
     ulong hostUserId;                                               // the user id of the room owner (host).
 
     HashSet<ulong> connectionRequests = new HashSet<ulong>();       // set of connection request ids we have received. used to fix race condition between connection request and room join.
@@ -46,8 +53,6 @@ public class Guest: Common
     
     int clientIndex = -1;                                           // while connected to server in [1,Constants.MaxClients-1]. -1 if not connected.
 
-    ulong roomId;                                                   // the id of the room that we have joined.
-
     public double timeMatchmakingStarted;                           // time matchmaking started
     public double timeConnectionStarted;                            // time the client connection started (used to timeout due to NAT)
     public double timeConnected;                                    // time the client connected to the server
@@ -55,14 +60,16 @@ public class Guest: Common
     public double timeLastPacketReceived;                           // time the last packet was received from the server (used for post-connect timeouts)
     public double timeRetryStarted;                                 // time the retry state started. used to delay in waiting for retry state before retrying matchmaking from scratch.
 
-    private byte[] readBuffer = new byte[Constants.MaxPacketSize];
+    private NetManager netManager;
+
+    private NetPeer hostNetPeer;
 
     bool IsConnectedToServer()
     {
         return state == GuestState.Connected;
     }
 
-    new void Awake()
+    void Awake()
     {
         Debug.Log( "*** GUEST ***" );
 
@@ -70,31 +77,18 @@ public class Guest: Common
 
         state = GuestState.LoggingIn;
 
-        InitializePlatformSDK( GetEntitlementCallback );
+        netManager = new NetManager(this);
+        netManager.UnconnectedMessagesEnabled = true;
+        netManager.Start();
 
-        Matchmaking.SetMatchFoundNotificationCallback( MatchFoundCallback );
 
-        Rooms.SetUpdateNotificationCallback( RoomUpdatedCallback );
-
-        Users.GetLoggedInUser().OnComplete( GetLoggedInUserCallback );
-
-        Net.SetPeerConnectRequestCallback( PeerConnectRequestCallback );
-
-        Net.SetConnectionStateChangedCallback( ConnectionStateChangedCallback );
-
-        Voip.SetVoipConnectRequestCallback( ( Message<NetworkingPeer> msg ) => 
+        if ( !InitializePlatformSDK( GetEntitlementCallback ) )
         {
-            Debug.Log( "Accepting voice connection from " + msg.Data.ID );
-            Voip.Accept( msg.Data.ID );
-        } );
-
-        Voip.SetVoipStateChangeCallback( ( Message<NetworkingPeer> msg ) =>
-        {
-            Debug.LogFormat( "Voice state changed to {1} for user {0}", msg.Data.ID, msg.Data.State );
-        } );
+            SetAnonymousUserAndStartMatchmaking();
+        }
     }
 
-    new void Start()
+    protected override void Start()
     {
         base.Start();
 
@@ -106,10 +100,13 @@ public class Guest: Common
         localAvatar.GetComponent<Avatar>().SetContext( context.GetComponent<Context>() );
     }
 
+    private void OnDestroy()
+    {
+        netManager.Stop();
+    }
+
     void RetryUntilConnectedToServer()
     {
-        Matchmaking.Cancel();
-
         DisconnectFromServer();
 
         if ( successfullyConnected )
@@ -119,6 +116,7 @@ public class Guest: Common
 
         timeRetryStarted = renderTime;
 
+        
         state = GuestState.WaitingForRetry;
     }
 
@@ -128,10 +126,12 @@ public class Guest: Common
         {
             Debug.Log( "You are entitled to use this app" );
 
+            Users.GetLoggedInUser().OnComplete( GetLoggedInUserCallback );
         }
         else
         {
             Debug.Log( "error: You are not entitled to use this app" );
+            SetAnonymousUserAndStartMatchmaking();
         }
     }
 
@@ -141,145 +141,46 @@ public class Guest: Common
         {
             Debug.Log( "User successfully logged in" );
 
-            userId = msg.Data.ID;
-            oculusId = msg.Data.OculusID;
-
-            Debug.Log( "User id is " + userId );
-            Debug.Log( "Oculus id is " + oculusId );
-
-            StartMatchmaking();
+            SetUserAndStartMatchmaking( msg.Data.ID, msg.Data.OculusID, 0 );
         }
         else
         {
             Debug.Log( "error: Could not get signed in user" );
+            
+            SetAnonymousUserAndStartMatchmaking();
         }
+    }
+
+    void SetAnonymousUserAndStartMatchmaking()
+    {
+        // Continue anyway with 0 Id for testing
+        SetUserAndStartMatchmaking( 0, "Guest", Random.Range( 0, int.MaxValue ) );
+    }
+
+    void SetUserAndStartMatchmaking(ulong userId, string oculusId, int anonymousId)
+    {
+        this.userId = userId;
+        this.oculusId = oculusId;
+        this.anonymousId = anonymousId;
+        
+        Debug.Log( "User id is " + userId );
+        Debug.Log( "Oculus id is " + oculusId );
+        Debug.Log( "Anonymous id is " + anonymousId );
+        
+        StartMatchmaking();
+        localAvatar.GetComponent<Avatar>().LoadAvatar( userId, anonymousId );
     }
 
     void StartMatchmaking()
     {
-        MatchmakingOptions matchmakingOptions = new MatchmakingOptions();
-        matchmakingOptions.SetEnqueueQueryKey( "quickmatch_query" );
-        matchmakingOptions.SetCreateRoomJoinPolicy( RoomJoinPolicy.Everyone );
-        matchmakingOptions.SetCreateRoomMaxUsers( Constants.MaxClients );
-        matchmakingOptions.SetEnqueueDataSettings( "version", Constants.Version.GetHashCode() );
-
-        Matchmaking.Enqueue2( "quickmatch", matchmakingOptions ).OnComplete( MatchmakingEnqueueCallback );
-
         timeMatchmakingStarted = renderTime;
-
         state = GuestState.Matchmaking;
+
+        Debug.Log("Sending Broadcast To Server");
+        // Broadcast the client message until a server responds
+        netManager.SendBroadcast(MagicClientBytes, Port);
     }
 
-    void MatchmakingEnqueueCallback( Message msg )
-    {
-        if ( !msg.IsError )
-        {
-            Debug.Log( "Started matchmaking..." );
-        }
-        else
-        {
-            Debug.Log( "error: matchmaking error - " + msg.GetError() );
-
-            RetryUntilConnectedToServer();
-        }
-    }
-
-    void MatchFoundCallback( Message<Room> msg )
-    {
-        Debug.Log( "Found match. Room id = " + msg.Data.ID );
-
-        roomId = msg.Data.ID;
-
-        Matchmaking.JoinRoom( msg.Data.ID, true ).OnComplete( JoinRoomCallback );
-    }
-
-    void JoinRoomCallback( Message<Room> msg )
-    {
-        if ( !msg.IsError )
-        {
-            Debug.Log( "Joined room" );
-
-            hostUserId = msg.Data.Owner.ID;
-            
-            PrintRoomDetails( msg.Data );
-
-            StartConnectionToServer();
-        }
-        else
-        {
-            Debug.Log( "error: Failed to join room - " + msg.GetError() );
-
-            RetryUntilConnectedToServer();
-        }
-    }
-
-    void RoomUpdatedCallback( Message<Room> msg )
-    {
-        var room = msg.Data;
-
-        if ( room.ID != roomId )
-            return;
-
-        if ( !msg.IsError )
-        {
-            Debug.Log( "Room updated" );
-
-            foreach ( var user in room.Users )
-            {
-                Debug.Log( " + " + user.OculusID + " [" + user.ID + "]" );
-            }
-
-            if ( state == GuestState.Connected && !FindUserById( room.Users, userId ) )
-            {
-                Debug.Log( "Looks like we got kicked from the room" );
-
-                RetryUntilConnectedToServer();
-            }
-        }
-        else
-        {
-            Debug.Log( "error: Room updated error (?!) - " + msg.GetError() );
-        }
-    }
-
-    void LeaveRoomCallback( Message<Room> msg )
-    {
-        if ( !msg.IsError )
-        {
-            Debug.Log( "Left room" );
-        }
-        else
-        {
-            Debug.Log( "error: Failed to leave room - " + msg.GetError() );
-        }
-    }
-
-    void PeerConnectRequestCallback( Message<NetworkingPeer> msg )
-    {
-        Debug.Log( "Received connection request from " + msg.Data.ID );
-
-        connectionRequests.Add( msg.Data.ID );
-    }
-
-    void ConnectionStateChangedCallback( Message<NetworkingPeer> msg )
-    {
-        if ( msg.Data.ID == hostUserId )
-        {
-            Debug.Log( "Connection state changed to " + msg.Data.State );
-
-            if ( msg.Data.State != PeerConnectionState.Connected )
-            { 
-                DisconnectFromServer();
-            }
-        }
-    }
-
-    void StartConnectionToServer()
-    {
-        state = GuestState.Connecting;
-
-        timeConnectionStarted = renderTime;
-    }
 
     void ConnectToServer( int clientIndex )
     {
@@ -303,13 +204,11 @@ public class Guest: Common
         if ( IsConnectedToServer() )
             OnDisconnectFromServer();
 
-        Net.Close( hostUserId );
-
-        LeaveRoom( roomId, LeaveRoomCallback );
-
-        roomId = 0;
+        netManager.DisconnectAll();
 
         hostUserId = 0;
+
+        hostNetPeer = null;
 
         state = GuestState.Disconnected;
 
@@ -353,38 +252,17 @@ public class Guest: Common
 
     protected override void OnQuit()
     {
-        Matchmaking.Cancel();
-
         if ( IsConnectedToServer() )
         {
             DisconnectFromServer();
         }
 
-        if ( roomId != 0 )
-        {
-            LeaveRoom( roomId, LeaveRoomOnQuitCallback );
-        }
-        else
-        {
-            readyToShutdown = true;
-        }
+        readyToShutdown = true;
     }
 
     protected override bool ReadyToShutdown()
     {
         return readyToShutdown;
-    }
-
-    void LeaveRoomOnQuitCallback( Message<Room> msg )
-    {
-        if ( !msg.IsError )
-        {
-            Debug.Log( "Left room" );
-        }
-
-        readyToShutdown = true;
-
-        roomId = 0;
     }
 
     new void Update()
@@ -407,18 +285,6 @@ public class Guest: Common
             RetryUntilConnectedToServer();
 
             return;
-        }
-
-        if ( state == GuestState.Connecting && !acceptedConnectionRequest )
-        {
-            if ( hostUserId != 0 && connectionRequests.Contains( hostUserId ) )
-            {
-                Debug.Log( "Accepting connection request from host" );
-
-                Net.Accept( hostUserId );
-
-                acceptedConnectionRequest = true;
-            }
         }
 
         if ( state == GuestState.Connected )
@@ -502,46 +368,15 @@ public class Guest: Common
 
         byte[] packetData = GenerateStateUpdatePacket( connectionData, (float) ( physicsTime - renderTime ) );
 
-        Net.SendPacket( hostUserId, packetData, SendPolicy.Unreliable );
+        netManager.SendToAll(packetData, DeliveryMethod.ReliableUnordered );
 
         timeLastPacketSent = renderTime;
     }
 
     void ProcessPacketsFromServer()
     {
-        Packet packet;
-
-        while ( ( packet = Net.ReadPacket() ) != null )
-        {
-            if ( packet.SenderID != hostUserId )
-                continue;
-
-            packet.ReadBytes( readBuffer );
-
-            byte packetType = readBuffer[0];
-
-            if ( ( state == GuestState.Connecting || state == GuestState.Connected ) && packetType == (byte) PacketSerializer.PacketType.ServerInfo )
-            {
-                ProcessServerInfoPacket( readBuffer );
-            }
-
-            if ( !IsConnectedToServer() )
-                continue;
-
-            if ( packetType == (byte) PacketSerializer.PacketType.StateUpdate )
-            {
-                if ( enableJitterBuffer )
-                {
-                    AddStateUpdatePacketToJitterBuffer( context, context.GetClientConnectionData(), readBuffer );
-                }
-                else
-                {
-                    ProcessStateUpdatePacket( context.GetClientConnectionData(), readBuffer );
-                }
-            }
-
-            timeLastPacketReceived = renderTime;
-        }
+        netManager.PollEvents();
+        
 
         // process state update from jitter buffer
 
@@ -559,6 +394,36 @@ public class Guest: Common
             if ( !connectionData.firstRemotePacket )
                 connectionData.remoteFrameNumber++;
         }
+    }
+
+    public void OnNetworkReceive(NetPeer peer, NetPacketReader reader, byte channelNumber, DeliveryMethod deliveryMethod)
+    {
+        if ( peer != hostNetPeer )
+            return;
+
+        byte packetType = reader.PeekByte();
+
+        if ( ( state == GuestState.Connecting || state == GuestState.Connected ) && packetType == (byte) PacketSerializer.PacketType.ServerInfo )
+        {
+            ProcessServerInfoPacket( reader.RawData, reader.Position );
+        }
+
+        if ( !IsConnectedToServer() )
+            return;
+
+        if ( packetType == (byte) PacketSerializer.PacketType.StateUpdate )
+        {
+            if ( enableJitterBuffer )
+            {
+                AddStateUpdatePacketToJitterBuffer( context, context.GetClientConnectionData(), reader.RawData, reader.Position );
+            }
+            else
+            {
+                ProcessStateUpdatePacket( context.GetClientConnectionData(), reader.RawData, reader.Position );
+            }
+        }
+
+        timeLastPacketReceived = renderTime;
     }
 
     public byte[] GenerateStateUpdatePacket( Context.ConnectionData connectionData, float avatarSampleTimeOffset )
@@ -608,11 +473,11 @@ public class Guest: Common
 
     ServerInfo packetServerInfo = new ServerInfo();
 
-    public void ProcessServerInfoPacket( byte[] packetData )
+    public void ProcessServerInfoPacket( byte[] packetData, int offset )
     {
         Profiler.BeginSample( "ProcessServerInfoPacket" );
 
-        if ( ReadServerInfoPacket( packetData, packetServerInfo.clientConnected, packetServerInfo.clientUserId, packetServerInfo.clientUserName ) )
+        if ( ReadServerInfoPacket( packetData, offset, packetServerInfo.clientConnected, packetServerInfo.clientUserId, packetServerInfo.clientUserName, packetServerInfo.clientAnonymousId ) )
         {
             Debug.Log( "Received server info:" );
 
@@ -622,7 +487,7 @@ public class Guest: Common
 
             if ( state == GuestState.Connecting )
             {
-                int clientIndex = packetServerInfo.FindClientByUserId( userId );
+                int clientIndex = packetServerInfo.FindClientByUserIdAndAnonymousId( userId, anonymousId );
 
                 if ( clientIndex != -1 )
                 {
@@ -645,7 +510,7 @@ public class Guest: Common
 
                 if ( !serverInfo.clientConnected[i] && packetServerInfo.clientConnected[i] )
                 {
-                    OnRemoteClientConnected( i, packetServerInfo.clientUserId[i], packetServerInfo.clientUserName[i] );
+                    OnRemoteClientConnected( i, packetServerInfo.clientUserId[i], packetServerInfo.clientUserName[i], packetServerInfo.clientAnonymousId[i] );
                 }
                 else if ( serverInfo.clientConnected[i] && !packetServerInfo.clientConnected[i] )
                 {
@@ -661,36 +526,21 @@ public class Guest: Common
         Profiler.EndSample();
     }
 
-    void OnRemoteClientConnected( int clientIndex, ulong userId, string userName )
+    void OnRemoteClientConnected( int clientIndex, ulong userId, string userName, int anonymousId )
     {
         Debug.Log( userName + " connected as client " + clientIndex );
 
-        context.ShowRemoteAvatar( clientIndex );
-
-        Voip.Start( userId );
-
-        var headGameObject = context.GetRemoteAvatarHead( clientIndex );
-        var audioSource = headGameObject.GetComponent<VoipAudioSourceHiLevel>();
-        if ( !audioSource )
-            audioSource = headGameObject.AddComponent<VoipAudioSourceHiLevel>();
-        audioSource.senderID = userId;
+        context.ShowRemoteAvatar( clientIndex, userId, anonymousId );
     }
 
     void OnRemoteClientDisconnected( int clientIndex, ulong userId, string userName )
     {
         Debug.Log( userName + " disconnected" );
 
-        var headGameObject = context.GetRemoteAvatarHead( clientIndex );
-        var audioSource = headGameObject.GetComponent<VoipAudioSourceHiLevel>();
-        if ( audioSource )
-            audioSource.senderID = 0;
-
-        Voip.Stop( userId );
-
         context.HideRemoteAvatar( clientIndex );
     }
 
-    public void ProcessStateUpdatePacket( Context.ConnectionData connectionData, byte[] packetData )
+    public void ProcessStateUpdatePacket( Context.ConnectionData connectionData, byte[] packetData, int offset )
     {
         Profiler.BeginSample( "ProcessStateUpdatePacket" );
 
@@ -699,7 +549,7 @@ public class Guest: Common
 
         Network.PacketHeader readPacketHeader;
 
-        if ( ReadStateUpdatePacket( packetData, out readPacketHeader, out readNumAvatarStates, ref readAvatarStateQuantized, out readNumStateUpdates, ref readCubeIds, ref readNotChanged, ref readHasDelta, ref readPerfectPrediction, ref readHasPredictionDelta, ref readBaselineSequence, ref readCubeState, ref readCubeDelta, ref readPredictionDelta ) )
+        if ( ReadStateUpdatePacket( packetData, offset, out readPacketHeader, out readNumAvatarStates, ref readAvatarStateQuantized, out readNumStateUpdates, ref readCubeIds, ref readNotChanged, ref readHasDelta, ref readPerfectPrediction, ref readHasPredictionDelta, ref readBaselineSequence, ref readCubeState, ref readCubeDelta, ref readPredictionDelta ) )
         {
             // unquantize avatar states
 
@@ -760,5 +610,59 @@ public class Guest: Common
         }
 
         Profiler.EndSample();
+    }
+
+    public void OnPeerConnected(NetPeer peer)
+    {
+    }
+
+    public void OnPeerDisconnected(NetPeer peer, DisconnectInfo disconnectInfo)
+    {
+        DisconnectFromServer();
+    }
+
+    public void OnNetworkError(IPEndPoint endPoint, SocketError socketError)
+    {
+        Debug.LogError("Network Error "+socketError);
+        DisconnectFromServer();
+    }
+
+    public void OnNetworkReceiveUnconnected(IPEndPoint remoteEndPoint, NetPacketReader reader, UnconnectedMessageType messageType)
+    {
+        if (reader.AvailableBytes < MagicHostBytes.Length)
+            return;
+        bool equal = true;
+        // compare all bytes for constant time comparison
+        for (int i = 0; i < MagicHostBytes.Length; i++)
+        {
+            equal &= reader.GetByte() == MagicHostBytes[i];
+        }
+
+        if (!equal)
+            return;
+
+        if (state == GuestState.Connected || state == GuestState.Connecting)
+            return;
+
+        Debug.Log("Receive Response with Server Identity");
+        NetDataWriter writer = new NetDataWriter();
+        writer.Put(userId);
+        writer.Put(oculusId);
+        writer.Put(anonymousId);
+        
+        timeConnectionStarted = renderTime;
+        state = GuestState.Connecting;
+        hostNetPeer = netManager.Connect(remoteEndPoint, writer);
+    }
+
+    public void OnNetworkLatencyUpdate(NetPeer peer, int latency)
+    {
+        // Do nothing
+    }
+
+    public void OnConnectionRequest(ConnectionRequest request)
+    {
+        // Don't allow connects to guest
+        request.Reject();
     }
 }
