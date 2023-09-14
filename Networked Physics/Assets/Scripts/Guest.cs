@@ -435,7 +435,7 @@ public class Guest: Common, INetEventListener
         if (packetType == (byte)PacketSerializer.PacketType.AnchorGuid)
         {
             Guid anchorGuid = new Guid(reader.RawData.AsSpan(reader.Position + 1));
-            if (spatialAnchor != null && spatialAnchor.Uuid != anchorGuid)
+            if (spatialAnchor == null || spatialAnchor.Uuid != anchorGuid)
             {
                 OVRSpatialAnchor.LoadUnboundAnchors(
                     new OVRSpatialAnchor.LoadOptions()
