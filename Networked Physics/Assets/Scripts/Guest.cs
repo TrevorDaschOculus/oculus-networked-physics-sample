@@ -141,7 +141,7 @@ public class Guest: Common, INetEventListener
         {
             Debug.Log( "User successfully logged in" );
 
-            SetUserAndStartMatchmaking( msg.Data.ID, msg.Data.OculusID, 0 );
+            SetUserAndStartMatchmaking( msg.Data.ID, msg.Data.OculusID );
         }
         else
         {
@@ -154,14 +154,14 @@ public class Guest: Common, INetEventListener
     void SetAnonymousUserAndStartMatchmaking()
     {
         // Continue anyway with 0 Id for testing
-        SetUserAndStartMatchmaking( 0, "Guest", Random.Range( 0, int.MaxValue ) );
+        SetUserAndStartMatchmaking( 0, "Guest" );
     }
 
-    void SetUserAndStartMatchmaking(ulong userId, string oculusId, int anonymousId)
+    void SetUserAndStartMatchmaking( ulong userId, string oculusId )
     {
         this.userId = userId;
         this.oculusId = oculusId;
-        this.anonymousId = anonymousId;
+        anonymousId = Random.Range( 0, int.MaxValue );
         
         Debug.Log( "User id is " + userId );
         Debug.Log( "Oculus id is " + oculusId );

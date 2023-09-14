@@ -136,7 +136,7 @@ public class Host : Common, INetEventListener
             Debug.Log( "User id is " + msg.Data.ID );
             Debug.Log( "Oculus id is " + msg.Data.OculusID  );
 
-            SetUserConnected(msg.Data.ID, msg.Data.OculusID, 0);
+            SetUserConnected( msg.Data.ID, msg.Data.OculusID );
         }
         else
         {
@@ -148,16 +148,16 @@ public class Host : Common, INetEventListener
     private void SetAnonymousUserConnected()
     {
         // Continue anyway with 0 ID for local testing
-        SetUserConnected( 0, "Host", Random.Range( 0, int.MaxValue) );
+        SetUserConnected( 0, "Host" );
     }
 
-    private void SetUserConnected( ulong userId, string oculusId, int anonymousId )
+    private void SetUserConnected( ulong userId, string oculusId )
     {
         
         client[0].state = ClientState.Connected;
         client[0].userId = userId;
         client[0].oculusId = oculusId;
-        client[0].anonymousId = 0;
+        client[0].anonymousId = Random.Range( 0, int.MaxValue );
         localAvatar.GetComponent<Avatar>().LoadAvatar( client[0].userId, client[0].anonymousId );
     }
 
