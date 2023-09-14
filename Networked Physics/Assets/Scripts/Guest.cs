@@ -18,6 +18,8 @@ using System.Net;
 using System.Net.Sockets;
 using LiteNetLib;
 using LiteNetLib.Utils;
+using Oculus.Interaction;
+using Unity.XR.CoreUtils;
 using Random = UnityEngine.Random;
 
 public class Guest: Common, INetEventListener
@@ -25,6 +27,7 @@ public class Guest: Common, INetEventListener
     const double RetryTime = 5.0;                                   // time between retry attempts.
 
     public Context context;
+    private OVRSpatialAnchor spatialAnchor;
 
     enum GuestState
     {
@@ -278,6 +281,12 @@ public class Guest: Common, INetEventListener
             RetryUntilConnectedToServer();
         }
 
+        if (spatialAnchor != null && spatialAnchor.Created)
+        {
+            // Transform our local avatar to the relative position of the spatial anchor because the host puts it at 0,0,0
+            localAvatar.transform.SetPose(spatialAnchor.transform.InverseTransformPose(Pose.identity));
+        }
+
         if ( state == GuestState.Matchmaking && timeMatchmakingStarted + 30.0 < renderTime )
         {
             Debug.Log( "No result from matchmaker" );
@@ -420,6 +429,34 @@ public class Guest: Common, INetEventListener
             else
             {
                 ProcessStateUpdatePacket( context.GetClientConnectionData(), reader.RawData, reader.Position );
+            }
+        }
+
+        if (packetType == (byte)PacketSerializer.PacketType.AnchorGuid)
+        {
+            Guid anchorGuid = new Guid(reader.RawData.AsSpan(reader.Position + 1));
+            if (spatialAnchor != null && spatialAnchor.Uuid != anchorGuid)
+            {
+                OVRSpatialAnchor.LoadUnboundAnchors(
+                    new OVRSpatialAnchor.LoadOptions()
+                    {
+                        StorageLocation = OVRSpace.StorageLocation.Cloud, Timeout = 10.0,
+                        Uuids = new Guid[] { anchorGuid }
+                    },
+                    unboundAnchors =>
+                    {
+                        if (unboundAnchors.Length > 0)
+                        {
+                            if (spatialAnchor != null)
+                            {
+                                Destroy(spatialAnchor.gameObject);
+                            }
+                            
+                            var go = new GameObject();
+                            spatialAnchor = go.AddComponent<OVRSpatialAnchor>();
+                            unboundAnchors[0].BindTo(spatialAnchor);
+                        }
+                    });
             }
         }
 

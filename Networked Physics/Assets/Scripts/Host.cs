@@ -8,6 +8,7 @@
  */
 
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using LiteNetLib;
@@ -21,6 +22,7 @@ using Random = UnityEngine.Random;
 public class Host : Common, INetEventListener
 {
     public Context context;
+    public OVRSpatialAnchor spatialAnchor;
 
     enum ClientState
     {
@@ -55,6 +57,7 @@ public class Host : Common, INetEventListener
     };
 
     ClientData [] client = new ClientData[Constants.MaxClients];
+    private bool anchorSaved;
 
     bool IsClientConnected( int clientIndex )
     {
@@ -137,11 +140,21 @@ public class Host : Common, INetEventListener
             Debug.Log( "Oculus id is " + msg.Data.OculusID  );
 
             SetUserConnected( msg.Data.ID, msg.Data.OculusID );
+            spatialAnchor.Save(new OVRSpatialAnchor.SaveOptions() { Storage = OVRSpace.StorageLocation.Cloud }, OnSpatialAnchorSaved );
         }
         else
         {
             Debug.Log( "error: Could not get signed in user" );
             SetAnonymousUserConnected();
+        }
+    }
+
+    private void OnSpatialAnchorSaved(OVRSpatialAnchor anchor, bool saved)
+    {
+        if (saved)
+        {
+            anchorSaved = true;
+            ShareSpatialAnchor();
         }
     }
 
@@ -153,7 +166,6 @@ public class Host : Common, INetEventListener
 
     private void SetUserConnected( ulong userId, string oculusId )
     {
-        
         client[0].state = ClientState.Connected;
         client[0].userId = userId;
         client[0].oculusId = oculusId;
@@ -250,6 +262,7 @@ public class Host : Common, INetEventListener
     {
         Debug.Log( client[clientIndex].oculusId + " joined the game as client " + clientIndex );
 
+        ShareSpatialAnchor();
         context.ShowRemoteAvatar( clientIndex, client[clientIndex].userId, client[clientIndex].anonymousId );
     }
 
@@ -478,6 +491,39 @@ public class Host : Common, INetEventListener
 
             client[clientIndex].timeLastPacketSent = renderTime;
         }
+    }
+
+    protected void ShareSpatialAnchor()
+    {
+        if (!anchorSaved)
+            return;
+        
+        var anchorUuid = spatialAnchor.Uuid;
+        List<OVRSpaceUser> spaceUsers = new List<OVRSpaceUser>();
+        for (int i = 1; i < Constants.MaxClients; i++)
+        {
+            if ( IsClientConnected(i) && client[i].userId != 0 && client[i].userId != client[0].userId )
+            {
+                spaceUsers.Add( new OVRSpaceUser( client[i].userId ) );
+            }
+        }
+
+        spatialAnchor.Share( spaceUsers, res =>
+        {
+            if (res != OVRSpatialAnchor.OperationResult.Success) return;
+            
+            byte[] packet = new byte[17];
+            packet[0] = (byte)PacketSerializer.PacketType.AnchorGuid;
+            anchorUuid.TryWriteBytes(packet.AsSpan(1));
+                
+            for ( int i = 1; i < Constants.MaxClients; i++ )
+            {
+                if ( IsClientConnected( i ) && client[i].userId != 0 )
+                {
+                    client[i].netPeer.Send( packet, DeliveryMethod.ReliableUnordered );
+                }
+            }
+        });
     }
    
     public byte[] GenerateServerInfoPacket()
